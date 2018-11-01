@@ -36,7 +36,6 @@ void t_terminate();
 struct QNode* newNode(tcb *key);
 struct Queue *createQueue();
 void enQueue(Queue *q, tcb *tcb);
-void enQueueExisting(Queue *q, QNode *temp);
 struct QNode *deQueue(Queue *q);
 int t_create(void (*fct)(int), int id, int pri);
 

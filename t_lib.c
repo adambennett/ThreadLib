@@ -75,10 +75,10 @@ int t_create(void (*fct)(int), int id, int pri)
 void t_shutdown()
 {
 	QNode *temp;
-	QNode *current = runningQueue->front;
+	QNode *current = readyQueue->front;
 	
 	// Free readyQueue data - QNodes, TCBs, and context references
-	while (readyQueue->front != NULL)
+	while (current != NULL)
 	{
 		temp = current;
 		if (current->next != NULL) { current = current->next; }
@@ -106,15 +106,17 @@ void t_shutdown()
 void t_terminate()
 {
 	// Dequeue currently running thread
-	QNode *del = deQueue(runningQueue);		
+	QNode *del = deQueue(runningQueue);
 	free(del->key->thread_context->uc_stack.ss_sp);
 	free(del->key->thread_context);
 	free(del->key);
 	free(del);
+	
 
 	// Switch head ready thread into running queue
 	QNode *newRunning = deQueue(readyQueue);
 	enQueue(runningQueue, newRunning->key);
+	free(newRunning);
 	
 	// Resume execution of newly running thread
 	ucontext_t *newConRef = newRunning->key->thread_context;
@@ -147,21 +149,6 @@ void enQueue(Queue *q, tcb *tcb)
 	QNode *temp = newNode(tcb);
 	
 
-	// If queue is empty, then new node is both front and rear
-	if (q->rear == NULL) 
-	{ 
-	   q->front = q->rear = temp; 
-	   return; 
-	} 
-
-	// Add the new node at the end of queue and change rear 
-	q->rear->next = temp; 
-	q->rear = temp; 
-} 
-
-// The function to add a thread control block into a queue
-void enQueueExisting(Queue *q, QNode *temp) 
-{ 
 	// If queue is empty, then new node is both front and rear
 	if (q->rear == NULL) 
 	{ 
