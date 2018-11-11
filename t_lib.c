@@ -9,9 +9,11 @@ QNode *runThread;
 
 void t_yield()
 {
+	
 	ualarm(0,0);
-	printList(ready);
+	//printList(ready);
 	QNode *next = pop(ready);
+	
 	if (next != NULL)
 	{
 		QNode *current = runThread;
@@ -29,7 +31,7 @@ void t_yield()
 	{
 		init_alarm();
 	}
-
+	
 
 	/*
 	QNode *prevRunning = deQueue(runningQueue);
@@ -188,33 +190,38 @@ void t_shutdown()
 		free(temp);
 	}
 	*/
+	
+	
 
 	// Free runningQueue data - QNode, TCB, and context reference
 	//temp = runningQueue->front;
-	temp = runThread;
-	free(temp->key->thread_context);
-	free(temp->key);
-	free(temp);
+	//temp = runThread;
+	//free(temp->key->thread_context);
+	//free(temp->key);
+	//free(temp);
 	
 	// Free queue structs
 	//free(readyQueue);
 	//free(runningQueue);
-	free(ready);
+	//free(ready);
 }
 
 void t_terminate()
 {
 	QNode *temp = runThread;
-	free(temp->key->thread_context->uc_stack.ss_sp);
-	free(temp->key->thread_context);
-	free(temp->key);
-	free(temp);
 	
 	runThread = pop(ready);
 	if (runThread != NULL)
 	{
 		setcontext(runThread->key->thread_context);
 	}
+	
+	free(temp->key->thread_context->uc_stack.ss_sp);
+	free(temp->key->thread_context);
+	free(temp->key);
+	free(temp);
+	
+	
 	
 	/*
 	// Dequeue currently running thread
@@ -332,11 +339,36 @@ void push(priorityQueue *q, QNode *node)
 		}
 		else
 		{
-			while (current->next != NULL && current->next->key->thread_priority < node->key->thread_priority)
+			bool pushed = false;
+			while (current->next != NULL && pushed == false)
+			{
+				// If node is higher priority than any other element encountered
+				if (node->key->thread_priority < current->next->key->thread_priority)
+				{
+					node->next = current->next;
+					current->next = node;
+					pushed = true;
+				}
+				
+				// Node has equal or lower priority than encountered element so keep looping through until the end
+				else
+				{
+					current = current->next;
+				}
+			}
+			
+			if (pushed == false)
+			{
+				current->next = node;
+			}
+			
+			/*
+			while (current->next != NULL && current->next->key->thread_priority <= node->key->thread_priority)
 			{
 				current = current->next;
 			}
 			current->next = node;
+			*/
 		}
 	}
 }
@@ -355,7 +387,7 @@ QNode *pop(priorityQueue *q)
 	{
 		temp->next = NULL;
 	}
-	
+
 	return temp;
 }
 
