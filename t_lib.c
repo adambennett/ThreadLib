@@ -511,21 +511,19 @@ mcb *newMsg(char *msg, int len, int sender, int rec)
 
 void send(int tid, char *msg, int len)
 {
-	// look through global thread list to find thread with ID = tid
 	QNode *thread = search3(threads->front, tid);
 	// lock thread message queue
 	// 
-	// put msg into thread message queue
+
+	
 	mcb* temp = newMsg(msg, len, running->thread_id, tid);
 	enQueueMsg(thread->key->q, temp);
 	// unlock thread message queue
 	//
-	// check tid thread int bit to see if it is waiting for this message
+	
 	if (thread->key->mBit == tid)
 	{
-		// sem_post() on thread sem_t to wake up thread if it is
 		sem_signal(thread->key->counting);
-		// reset thread waiting for int bit if so
 		thread->key->mBit == -1;
 	}
 	return;
@@ -533,71 +531,59 @@ void send(int tid, char *msg, int len)
 
 void receive(int *tid, char *msg, int *len)
 {
-	// look through global thread list to find thread with ID = tid
 	QNode *thread = search3(threads->front, running->thread_id);
 	if (*tid > 0)
 	{
 		// lock thread message queue
 		// 
-		// look through thread msg queue for message matching tid
+		
 		MNode *msgNode = search(thread->key->q->front, *tid);
-		//if (msgNode != NULL) { printf("%s\n", msgNode->key->message); }
-		// if there is one
 		if (msgNode != NULL)
 		{
-			// Set msg = found message
 			sprintf(msg, "%s", msgNode->key->message);
 			*len = msgNode->key->len;
 			// unlock queue
 			//
-			// reset thread int bit to -1
+			
 			thread->key->mBit = -1;
 			return;
 		}
-		// if no matching message
 		else
 		{
-			// set thread int bit to tid
 			thread->key->mBit = *tid;
 			// unlock queue
 			//
-			// sem_wait() on thread sem_t
+			
 			sem_wait(thread->key->counting);
-			// recursive receive() call
 			receive(tid, msg, len);
-			//printf("First else in receive() triggered\n");
 		}
 	}
-	// if tid = 0
+
 	else if (*tid == 0)
 	{
 		// lock thread message queue
 		//
-		// if the message queue is not empty
+		
 		if (thread->key->q->front != NULL)
 		{
-			// Set msg = first message in queue
 			MNode *msgNode = deQueueMsg(thread->key->q);
 			sprintf(msg, "%s", msgNode->key->message);
 			*len = msgNode->key->len;
 			// unlock queue
 			//
-			// reset thread int bit to -1
+			
 			thread->key->mBit = -1;
 			return;
 		}
-		// if message queue IS empty
 		else
 		{
-			// set thread int bit to 0
 			thread->key->mBit = 0;
 			// unlock queue
 			//
-			// sem_wait on thread sem_t
+			
+			
 			sem_wait(thread->key->counting);
-			// recursive receive() call
 			receive(tid, msg, len);
-			//printf("Second else in receive() triggered\n");
 		}
 	}
 }
