@@ -12,6 +12,7 @@ typedef struct QNode
 { 
 	struct tcb *key; 
 	struct QNode *next; 
+	struct QNode *prev;
 }QNode; 
 
 // Node structure for use in Message Queues
@@ -19,15 +20,20 @@ typedef struct MNode
 { 
 	struct mcb *key; 
 	struct MNode *next; 
+	struct MNode *prev;
 }MNode; 
 
 // Thread control block structure
 typedef struct tcb 
 {
-	int         thread_id;
-	int         thread_priority;
-	ucontext_t  *thread_context;
-	struct tcb *next;
+	int         		thread_id;
+	int         		thread_priority;
+	int					mBit;				// int bit for send/receive (keeps track of what the thread is waiting on)
+	ucontext_t  		*thread_context;
+	struct tcb 			*next;					
+	struct sem_t 		*locking;			// for send/receive
+	struct sem_t		*counting;			// for send/receive
+	struct msgQueue 	*q;					// message queue
 }tcb;
 
 // Message control block structure
@@ -79,7 +85,7 @@ void sem_wait(sem_t *s);
 void sem_signal(sem_t *s);
 void sem_destroy(sem_t **s);
 int sem_init(sem_t **s, int sem_count);
-QNode* newNode(tcb *key);
+QNode *newNode(tcb *key);
 MNode *newMsgNode(mcb *mcb);
 QNode *deQueue(Queue *q);
 MNode *deQueueMsg(msgQueue *q);
@@ -91,5 +97,13 @@ void mbox_deposit(mbox *mb, char *msg, int len);
 void mbox_withdraw(mbox *mb, char *msg, int *len);
 void send(int tid, char *msg, int len);
 void receive(int *tid, char *msg, int *len);
+void deleteNode(MNode **head_ref, MNode *del);
+void deleteQNode(QNode **head_ref, QNode *del);
+MNode *search(MNode* head, int x);
+QNode *search2(QNode* head, QNode* del);
+QNode *search3(QNode* head, int tid);
+void printList(QNode* node);
+void printMessages(MNode* node);
+mcb *newMsg(char *msg, int len, int sender, int rec);
 
 #endif //tlib_h
