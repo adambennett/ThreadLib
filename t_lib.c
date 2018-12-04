@@ -14,7 +14,6 @@ void t_yield()
 	{
 		//Reset running to dequeued thread
 		running = new->key;
-		
 		free(new);
 		
 		//Enqueue old running thread to ready queue
@@ -37,6 +36,7 @@ void t_init()
 	tmp->thread_id = 0;
     tmp->thread_priority = 0;
 	tmp->thread_context = temp;
+	tmp->alive = 1;
 	
 	//Init ready queue
 	ready = createQueue();
@@ -49,70 +49,87 @@ void t_init()
 	running = tmp;
 }
 
-
 void t_create(void (*fct)(int), int id, int pri)
 {
+	// Generic thread init stuff
 	size_t sz = 0x10000;
-
 	ucontext_t *uc;
 	uc = (ucontext_t *) malloc(sizeof(ucontext_t));
-
 	getcontext(uc);
-	/***
-	uc->uc_stack.ss_sp = mmap(0, sz,
-	   PROT_READ | PROT_WRITE | PROT_EXEC,
-	   MAP_PRIVATE | MAP_ANON, -1, 0);
-	***/
-	uc->uc_stack.ss_sp = malloc(sz);  /* new statement */
+	uc->uc_stack.ss_sp = malloc(sz);
 	uc->uc_stack.ss_size = sz;
 	uc->uc_stack.ss_flags = 0;
 	uc->uc_link = running; 
+	
+	// Set thread function
 	makecontext(uc, (void (*)(void)) fct, 1, id);
 
+	// Create thread control block for new thread
 	tcb *thread = (tcb *) malloc(sizeof(tcb));
 	
-	sem_init(&(thread)->locking, 0);
+	// Init thread semaphores for locking and blocking
+	sem_init(&(thread)->locking, 1);
 	sem_init(&(thread)->counting, 0);
 	
-	thread->mBit = -1;
-	thread->q = calloc(100, sizeof(char*));
+	// Set int bit that keeps track of what thread's message this thread is waiting to receive
+	thread->mBit = -1;	// -1 is flag for not waiting
+	
+	// Set thread to alive
+	thread->alive = 1;
+	
+	// Allocate space for messages to be held within each thread
+	thread->q = createMsgQueue();
+	
+	// Thread ID, priority, context ref
 	thread->thread_id = id;
 	thread->thread_priority = pri;
 	thread->thread_context = uc;
+	
+	// Put new thread into both the ready queue (so it will be executed) and the threads queue (so it can receive messages)
 	enQueue(ready, thread);
 	enQueue(threads, thread);
 }
-
 
 void t_shutdown()
 {
 	tcb *temp;
 	QNode *current = ready->front;
-	//QNode *current2 = threads->front;
+	QNode *current2 = threads->front;
+	QNode *ref;
+	MNode *ref2;
 	
-	//Free readyQueue data - QNodes, TCBs, and context references
+	//Free readyQueue data - QNodes, TCBs, context refs, semaphores, and message queues
 	while(current != NULL)
 	{
 		temp = current->key;
 		if(temp->thread_id > 0) { free(temp->thread_context->uc_stack.ss_sp);}
 		free(temp->thread_context);
+		sem_destroy(&(temp)->locking);
+		sem_destroy(&(temp)->counting);
+		MNode *current3 = temp->q->front;
+		while(current3 != NULL)
+		{
+			mcb *temp2 = current3->key;
+			free(temp2->message);
+			free(temp2);
+			ref2 = current3->next;
+			free(current3);
+			current3 = ref2;
+		}
+		msgQueuePlumber(temp->q);
 		free(temp);
+		ref = current->next;
 		free(current);
-		current = current->next;
+		current = ref;
 	}
 	
-	/*
 	//Free global thread list data - QNodes, TCBs, and context references
 	while(current2 != NULL)
 	{
 		temp = current2->key;
 		if(temp->thread_id > 0) { free(temp->thread_context->uc_stack.ss_sp);}
-		free(temp->thread_context);
-		free(temp);
-		free(current2);
 		current2 = current2->next;
 	}
-	*/
 	
 	//Free running thread data - QNode, TCB, and context reference
 	temp = running;
@@ -123,6 +140,9 @@ void t_shutdown()
 	//Free queue struct
 	free(ready);
 	
+	//Free global thread list
+	free(threads);
+	
 }
 
 void t_terminate()
@@ -130,11 +150,27 @@ void t_terminate()
 	tcb *temp;
 	QNode *current;
 	temp = running;
+	QNode *staticRunRef = newNode(temp);
+	MNode *ref2;
 	
 	//Free running thread
-	//free(temp->thread_context->uc_stack.ss_sp);
-	//free(temp->thread_context);
-	//free(temp);
+	free(temp->thread_context->uc_stack.ss_sp);
+	free(temp->thread_context);
+	sem_destroy(&(temp)->locking);
+	sem_destroy(&(temp)->counting);
+	MNode *current3 = temp->q->front;
+	while(current3 != NULL)
+	{
+		mcb *temp2 = current3->key;
+		free(temp2->message);
+		free(temp2);
+		ref2 = current3->next;
+		free(current3);
+		current3 = ref2;
+	}
+	free(current3);
+	msgQueuePlumber(temp->q);
+	free(temp);
 	
 	//Dequeue from ready queue
 	current = deQueue(ready);
@@ -142,222 +178,15 @@ void t_terminate()
 	//Run new thread and free temp reference node
 	running = current->key;
 	
+	//Reset a reference to the terminated thread inside the global thread list
+	staticRunRef->key->alive = 0;
+	enQueue(threads, staticRunRef->key);
+	
+	//Context switch
 	setcontext(running->thread_context);
 }
 
-// A utility function to create a new thread queue node
-QNode *newNode(tcb *tcb)
-{
-    QNode *temp = (QNode*)malloc(sizeof(QNode)); 
-    temp->key = tcb; 
-    temp->next = NULL; 
-    return temp;  
-}
-
-// A utility function to create a new message queue node
-MNode *newMsgNode(mcb *mcb)
-{
-    MNode *temp = (MNode*)malloc(sizeof(MNode)); 
-    temp->key = mcb; 
-    temp->next = NULL; 
-    return temp;  
-}
-
-// A utility function to create an empty thread queue 
-Queue *createQueue() 
-{
-	Queue *q = (Queue*)malloc(sizeof(Queue)); 
-    q->front = q->rear = NULL; 
-    return q; 
-}
-
-// A utility function to create an empty message queue 
-msgQueue *createMsgQueue() 
-{
-	msgQueue *q = (msgQueue*)malloc(sizeof(msgQueue)); 
-    q->front = q->rear = NULL; 
-    return q; 
-}
-
-// The function to add a thread control block into a queue
-void enQueue(Queue *q, tcb *tcb) 
-{ 
-	// Create a new LL node with the properties of the thread control block
-	QNode *temp = newNode(tcb);
-	
-	// If queue is empty, then new node is both front and rear
-	if (q->rear == NULL) 
-	{ 
-	   q->front = q->rear = temp; 
-	   temp->prev = NULL;
-	   temp->next = NULL;
-	   return; 
-	} 
-
-	// Add the new node at the end of queue and change rear 
-	q->rear->next = temp; 
-	temp->prev = q->rear;
-	q->rear = temp; 
-	temp->next = NULL;
-}
-
-// The function to add a message control block into a queue
-void enQueueMsg(msgQueue *q, mcb *mcb) 
-{ 
-	// Create a new LL node with the properties of the thread control block
-	MNode *temp = newMsgNode(mcb);
-	
-	// If queue is empty, then new node is both front and rear
-	if (q->rear == NULL) 
-	{ 
-	   q->front = q->rear = temp; 
-	   temp->prev = NULL;
-	   temp->next = NULL;
-	   return; 
-	} 
-
-	// Add the new node at the end of queue and change rear 
-	q->rear->next = temp; 
-	temp->prev = q->rear;
-	q->rear = temp; 
-	temp->next = NULL;
-}
-
-// Function to remove a thread from given queue q
-QNode *deQueue(Queue *q) 
-{ 
-    //If the queue is empty return NULL
-    if (q->front == NULL) 
-	{
-       return NULL; 
-	}
-  
-    //Store previous front and move front one node ahead 
-	QNode *temp = q->front; 
-    q->front = q->front->next; 
-  
-    //If front becomes NULL, then change rear to NULL as well
-    if (q->front == NULL)
-	{		
-       q->rear = NULL; 
-	}
-	
-	//Return the node we removed
-    return temp; 
-}
-
-// Function to remove a message from given queue q
-MNode *deQueueMsg(msgQueue *q) 
-{ 
-    //If the queue is empty return NULL
-    if (q->front == NULL) 
-	{
-       return NULL; 
-	}
-  
-    //Store previous front and move front one node ahead 
-	MNode *temp = q->front; 
-    q->front = q->front->next; 
-  
-    //If front becomes NULL, then change rear to NULL as well
-    if (q->front == NULL)
-	{		
-       q->rear = NULL; 
-	}
-	
-	//Return the node we removed
-    return temp; 
-}
-
-/* Function to delete a node in a Doubly Linked List. 
-   head_ref --> pointer to head node pointer. 
-   del  -->  pointer to node to be deleted. */
-void deleteNode(MNode **head_ref, MNode *del) 
-{ 
-  /* base case */
-  if(*head_ref == NULL || del == NULL) 
-    return; 
-  
-  /* If node to be deleted is head node */
-  if(*head_ref == del) 
-    *head_ref = del->next; 
-  
-  /* Change next only if node to be deleted is NOT the last node */
-  if(del->next != NULL) 
-    del->next->prev = del->prev; 
-  
-  /* Change prev only if node to be deleted is NOT the first node */
-  if(del->prev != NULL) 
-    del->prev->next = del->next;      
-  
-  /* Finally, free the memory occupied by del*/
-  free(del); 
-  return; 
-}
-
-/* Function to delete a node in a Doubly Linked List. 
-   head_ref --> pointer to head node pointer. 
-   del  -->  pointer to node to be deleted. */
-void deleteQNode(QNode **head_ref, QNode *del) 
-{ 
-  /* base case */
-  if(*head_ref == NULL || del == NULL) 
-    return; 
-  
-  /* If node to be deleted is head node */
-  if(*head_ref == del) 
-    *head_ref = del->next; 
-  
-  /* Change next only if node to be deleted is NOT the last node */
-  if(del->next != NULL) 
-    del->next->prev = del->prev; 
-  
-  /* Change prev only if node to be deleted is NOT the first node */
-  if(del->prev != NULL) 
-    del->prev->next = del->next;      
-  
-  /* Finally, free the memory occupied by del*/
-  free(del); 
-  return; 
-}
-
-MNode *search(MNode* head, int x) 
-{ 
-    MNode* current = head;  // Initialize current 
-    while (current != NULL) 
-    { 
-        if (current->key->sender == x) 
-            return current; 
-        current = current->next; 
-    } 
-    return NULL; 
-}   
-
-QNode *search2(QNode* head, QNode* del) 
-{ 
-    QNode* current = head;  // Initialize current 
-    while (current != NULL) 
-    { 
-        if (current == del) 
-            return current; 
-        current = current->next; 
-    } 
-    return NULL; 
-}  
-
-QNode *search3(QNode* head, int tid) 
-{ 
-	//printList(threads->front);
-    QNode* current = head;  // Initialize current 
-    while (current != NULL) 
-    { 
-        if (current->key->thread_id == tid) 
-            return current; 
-        current = current->next; 
-    } 
-    return NULL; 
-} 
-
+// Initialize semaphore
 int sem_init(sem_t **s, int sem_count)
 {
 	*s = malloc(sizeof(sem_t));
@@ -365,6 +194,7 @@ int sem_init(sem_t **s, int sem_count)
 	(*s)->q = createQueue();
 }
 
+// Decrement passed semaphore
 void sem_wait(sem_t *s)
 {
 	//Disable interrupts
@@ -397,6 +227,7 @@ void sem_wait(sem_t *s)
 	else if(s->count >= 0) { sigrelse(); return; }
 }
 
+// Incremenet passed semaphore : aka sem_post()
 void sem_signal(sem_t *s)
 {
 	//Disable interrupts
@@ -428,10 +259,13 @@ void sem_signal(sem_t *s)
 	else { sigrelse(); return; }
 }
 
+// Terminates and frees semaphore
 void sem_destroy(sem_t **s)
 {
 	tcb *temp;
 	QNode *current = (*s)->q->front;
+	QNode *ref;
+	MNode *ref2;
 	
 	//Free readyQueue data - QNodes, TCBs, and context references
 	while(current != NULL)
@@ -439,9 +273,21 @@ void sem_destroy(sem_t **s)
 		temp = current->key;
 		if(temp->thread_id > 0) {free(temp->thread_context->uc_stack.ss_sp);}
 		free(temp->thread_context);
+		MNode *current3 = temp->q->front;
+		while(current3 != NULL)
+		{
+			mcb *temp2 = current3->key;
+			free(temp2->message);
+			free(temp2);
+			ref2 = current3->next;
+			free(current3);
+			current3 = ref2;
+		}
+		msgQueuePlumber(temp->q);
 		free(temp);
+		ref = current->next;
 		free(current);
-		current = current->next;
+		current = ref;
 	}
 	
 	//Free the semaphore queue struct and semaphore
@@ -450,13 +296,15 @@ void sem_destroy(sem_t **s)
 	return;
 }
 
+// Create mbox object and allocate necessary space
 int mbox_create(mbox **mb)
 {
 	*mb = malloc(sizeof(mbox));	
 	(*mb)->q = createMsgQueue();
-	sem_init(&(*mb)->s, 0);
+	sem_init(&(*mb)->s, 1);
 }
 
+// Terminate and free mbox object
 void mbox_destroy(mbox **mb)
 {
 	mcb *temp;
@@ -479,156 +327,151 @@ void mbox_destroy(mbox **mb)
 	free(*mb);
 }
 
+// Put message into mbox queue
 void mbox_deposit(mbox *mb, char *msg, int len)
 {
+	// Create temp message control block
 	mcb *temp = malloc(sizeof(mcb));
+	
+	// Allocate mcb message field
 	temp->message = malloc(sizeof(msg) * len);
+	
+	// Copy desired message into mcb message field
 	strcpy(temp->message, msg);
+	
+	// Copy message length into mcb len field
 	temp->len = len;
 	temp->next = NULL;
+	
+	// Lock mbox queue
+	sem_wait(mb->s);
+	
+	// Enqueue message into queue
 	enQueueMsg(mb->q, temp);
+	
+	// Unlock mbox queue
+	sem_signal(mb->s);
 }
 
 void mbox_withdraw(mbox *mb, char *msg, int *len)
 {
+	// Lock mbox queue
+	sem_wait(mb->s);
 	
+	// Dequeue message from mbox
 	MNode *temp = deQueueMsg(mb->q);
+	
+	// Unlock queue
+	sem_signal(mb->s);
+	
+	// Point msg and len to the found message and the length of it
 	sprintf(msg, "%s", temp->key->message);
 	*len = temp->key->len;
 }
 
-mcb *newMsg(char *msg, int len, int sender, int rec)
-{
-	mcb *temp = malloc(sizeof(mcb));
-	temp->message = malloc(sizeof(msg) * len);
-	strcpy(temp->message, msg);
-	temp->len = len;
-	temp->next = NULL;
-	temp->sender = sender;
-	temp->receiver = rec;
-	return temp;
-}
-
+// Sends msg from running thread to thread with thread_id = tid
 void send(int tid, char *msg, int len)
 {
-	QNode *thread = search3(threads->front, tid);
-	// lock thread message queue
-	// 
-
+	// Find the thread we want to send to within global thread list
+	QNode *thread = search2(threads->front, tid);
 	
+	// Lock thread message queue
+	sem_wait(thread->key->locking);
+	
+	// Create message control block for new message
 	mcb* temp = newMsg(msg, len, running->thread_id, tid);
-	enQueueMsg(thread->key->q, temp);
-	// unlock thread message queue
-	//
 	
-	if (thread->key->mBit == tid)
+	// Enqueue message into thread queue
+	enQueueMsg(thread->key->q, temp);
+	
+	// Unlock thread message queue
+	sem_signal(thread->key->locking);
+	
+	// If thread we just deposited into is waiting on this message
+	if (thread->key->mBit == tid || thread->key->mBit == 0)
 	{
+		// Wake thread
 		sem_signal(thread->key->counting);
+		
+		// Reset wait bit
 		thread->key->mBit == -1;
 	}
 	return;
 }
 
+// Receives a msg in running thread from thread with thread_id = tid, or if tid = 0 blocks until a message is received
 void receive(int *tid, char *msg, int *len)
 {
-	QNode *thread = search3(threads->front, running->thread_id);
+	// Find the thread we want to send to within global thread list
+	QNode *thread = search2(threads->front, running->thread_id);
+	
+	// If looking for specific thread's message
 	if (*tid > 0)
 	{
-		// lock thread message queue
-		// 
+		// Lock message queue
+		sem_wait(thread->key->locking);
 		
+		// Look through queue for matching message
 		MNode *msgNode = search(thread->key->q->front, *tid);
+		
+		// If message match found
 		if (msgNode != NULL)
 		{
+			// Copy and remove message from queue
 			sprintf(msg, "%s", msgNode->key->message);
 			*len = msgNode->key->len;
-			// unlock queue
-			//
+			deleteNode(&(thread)->key->q->front, msgNode, thread->key->q); 
 			
+			// Unlock message queue and reset wait bit
+			sem_signal(thread->key->locking);
 			thread->key->mBit = -1;
 			return;
 		}
 		else
 		{
+			// Set wait bit and unlock message queue
 			thread->key->mBit = *tid;
-			// unlock queue
-			//
+			sem_signal(thread->key->locking);
 			
+			// Block until message is deposited matching wait bit sender
 			sem_wait(thread->key->counting);
+			
+			// When message is received, just call this again to properly receive it
 			receive(tid, msg, len);
 		}
 	}
 
+	// If looking for any message
 	else if (*tid == 0)
 	{
-		// lock thread message queue
-		//
+		// Lock message queue
+		sem_wait(thread->key->locking);
 		
+		// If message queue is not empty
 		if (thread->key->q->front != NULL)
 		{
+			// Remove message from queue and copy data to proper locations
 			MNode *msgNode = deQueueMsg(thread->key->q);
 			sprintf(msg, "%s", msgNode->key->message);
 			*len = msgNode->key->len;
-			// unlock queue
-			//
+			*tid = msgNode->key->receiver;
 			
+			// Unlock message queue and reset wait bit
+			sem_signal(thread->key->locking);
 			thread->key->mBit = -1;
 			return;
 		}
 		else
 		{
+			// Set wait bit and unlock message queue
 			thread->key->mBit = 0;
-			// unlock queue
-			//
+			sem_signal(thread->key->locking);
 			
-			
+			// Block until message is received
 			sem_wait(thread->key->counting);
+			
+			// When message is received, just call this again to properly receive it
 			receive(tid, msg, len);
 		}
 	}
 }
-
-// This function prints contents of linked list starting from the given node 
-void printList(QNode* node) 
-{ 
-    QNode* last; 
-    printf("\nTraversal in forward direction \n"); 
-    while (node != NULL) { 
-        printf(" %d ", node->key->thread_id); 
-        last = node; 
-        node = node->next; 
-    } 
-  
-	printf("\n");
-	/*
-    printf("\nTraversal in reverse direction \n"); 
-    while (last != NULL) { 
-        printf(" %d ", last->key->thread_id); 
-        last = last->prev; 
-    } 
-	*/
-} 
-
-// This function prints contents of linked list starting from the given node 
-void printMessages(MNode* node) 
-{ 
-    MNode* last; 
-    printf("\nTraversal in forward direction \n"); 
-    while (node != NULL) { 
-        printf(" %s\n", node->key->message); 
-        last = node; 
-        node = node->next; 
-    } 
-  
-	printf("\n");
-	/*
-    printf("\nTraversal in reverse direction \n"); 
-    while (last != NULL) { 
-        printf(" %d ", last->key->thread_id); 
-        last = last->prev; 
-    } 
-	*/
-} 
-
-
-
